@@ -499,16 +499,36 @@ The recorded run for this project passed **18 tests**. Tests using mocked portal
 
 ## Reflection
 
-Investigating this portal showed me the importance of understanding an existing system before designing an adapter around it. Rather than assuming that all required data would be available in one endpoint, I inspected the portal UI and its network requests, tested authenticated endpoints, and compared those responses with the exported meter JSON. This helped distinguish static meter metadata from live transformer, energy, and geographic data.
+### 1. Understanding the Existing Portal
+- I inspected the portal's UI, network requests, authenticated endpoints, and exported meter JSON before designing the adapter.
+- This helped me distinguish local meter metadata from live transformer, energy, and geographic data.
 
-One key finding was that the meter export provided a complete snapshot of 403 meter records, but it did not contain the energy readings needed by the API. Transformer data was available through a paginated endpoint, so the adapter needed to follow the pagination metadata instead of assuming the first page was the full dataset. I also found that a meter's transformer code could be joined to the transformer's code, allowing the API to expose meter-to-transformer relationships.
+### 2. Data Discovery and Relationships
+- The portal's export provided a snapshot of **403 meter records**, but energy readings had to be retrieved separately.
+- Transformer data was paginated, so I implemented pagination using the portal's metadata rather than relying on the first page.
+- I linked meters to transformers using their transformer codes to expose these relationships through the API.
 
-Authentication and data freshness were important practical challenges. The portal session could expire while the adapter was running, so I kept the session token in an environment variable rather than hardcoding it. For transformer data, I chose a simple in-memory cache with a 30-minute TTL and an explicit stale-data fallback if refresh failed after a successful fetch. This avoids unnecessary upstream requests while making it clear to clients when the returned data may be old. Meter metadata remains a local snapshot, and energy and geo data are fetched live; these are deliberate trade-offs rather than guarantees that every dataset is always current.
+### 3. Automatic Authentication
+- Initially, the adapter required a manually copied session cookie, which could expire while the application was running.
+- I updated it to log in using credentials stored in environment variables, retain the session cookie, and attempt re-authentication when an upstream request returns an authentication error.
+- The failed request is retried only once to avoid infinite retry loops, and credentials are kept out of the source code.
 
-The test suite helped verify route behavior, filtering, pagination, and cache failure paths without depending on a live portal session. However, mocked tests only establish how the adapter behaves against the test fixtures; they do not prove that every live portal response will remain unchanged. Before production use, I would add controlled integration tests, stronger response models and schema validation, structured logging, and monitoring for upstream failures and stale responses. I would also investigate supported ways to refresh the meter snapshot and renew the session, rather than assuming undocumented endpoints exist.
+### 4. Caching and Data Freshness
+- I implemented a **30-minute in-memory cache** for transformer data to reduce repeated portal requests.
+- If refreshing the cache fails after a successful fetch, the adapter can serve the last available dataset and mark the response as stale.
+- Meter metadata remains a local snapshot, while energy readings and geographic data are fetched from the portal when requested.
 
-Overall, the main lesson was to separate observed portal behavior from assumptions, document unknowns explicitly, and prefer a small, testable implementation over adding infrastructure that the observed dataset and requirements did not yet justify.
+### 5. Testing and Reliability
+- The automated test suite passed, covering API routes, filtering, pagination, meter-to-transformer relationships, and cache failure scenarios.
+- The tests use mocked portal responses, so live authentication and integration must be verified separately.
 
+### 6. Limitations and Future Improvements
+- Meter metadata does not automatically refresh, and the in-memory transformer cache resets when the application restarts.
+- I would improve the adapter with controlled integration tests, stronger response validation, structured logging, and monitoring for upstream failures and stale data.
+- I would also investigate supported mechanisms for refreshing meter metadata and maintaining authentication rather than assuming undocumented portal endpoints exist.
+
+### Key Takeaway
+This project reinforced the importance of separating observed system behavior from assumptions. I chose a small, testable architecture that addresses the requirements while documenting its limitations and leaving room for future improvements.
 ## Related documentation
 
 - [`PROTOCOL.md`](PROTOCOL.md) — detailed portal investigation, observed endpoints, data fields, authentication behavior, and unverified questions.
