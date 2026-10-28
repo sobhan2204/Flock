@@ -19,103 +19,133 @@ A FastAPI service that provides a documented API over the legacy Urja Meter Ops 
 
 ## Architecture & Request Flow
 
-The adapter exposes a clean FastAPI interface over the legacy Urja Meter Ops portal. It combines locally indexed meter metadata with live upstream requests for transformer data, energy readings, and geographic coordinates.
+The FastAPI adapter provides a unified interface to meter metadata, transformer information, network hierarchy, energy readings, and geographic coordinates. It combines local data processing with authenticated requests to the legacy Urja Meter Ops portal.
 
-The diagram below shows the main application components, API endpoints, internal processing functions, and upstream dependencies.
+### 1. System overview
 
 ```mermaid
 flowchart TD
-    Client(["API Client"])
+    A(["API Client"]) --> B["FastAPI Application"]
 
-    subgraph API["FastAPI Application"]
-        Health["GET /health<br/>Check service health"]
+    B --> C["Local Data Pipeline"]
+    B --> D["Transformer Pipeline"]
+    B --> E["Live Data Proxy"]
 
-        MeterList["GET /meters<br/>List, filter and paginate meters"]
-        Search["GET /meters/search<br/>Search by meter ID or serial"]
-        Serial["GET /meters/search-by-serial/{serial_no}<br/>Find a meter by serial number"]
-        MeterDetail["GET /meters/{meter_id}<br/>Retrieve one meter record"]
+    C --> F[("meter.json")]
+    F --> G["Startup Indexes & Filters"]
+    G --> H(["Meter and Hierarchy Responses"])
 
-        Energy["GET /meters/{meter_id}/energy<br/>Retrieve recent energy readings"]
-        Geo["GET /meters/{meter_id}/geo<br/>Retrieve meter coordinates"]
+    D --> I["fetch_all_transformers()"]
+    I --> J[("30-minute Cache")]
+    J --> K(["Transformer Responses"])
 
-        Transformers["GET /transformers<br/>List transformers"]
-        TransformerMeters["GET /transformers/{code}/meters<br/>Find meters linked to a transformer"]
-        Hierarchy["GET /network/hierarchy<br/>Retrieve network hierarchy"]
+    E --> L["portal_get(path)"]
+    L --> M["Urja Meter Ops Portal"]
+    M --> N(["Energy and Geo Responses"])
 
-        Index["Startup indexing<br/>Build meter lookup indexes"]
-        Filter["Meter filtering and pagination<br/>Apply query and hierarchy filters"]
-        PortalGet["portal_get(path)<br/>Make authenticated portal requests"]
-        FetchDT["fetch_all_transformers()<br/>Fetch and validate all pages"]
-        Cache{"Transformer cache<br/>Fresh within 30 minutes?"}
-    end
+    classDef client fill:#E8F0FE,stroke:#4776C5,color:#172B4D
+    classDef process fill:#F1F3F5,stroke:#87919C,color:#20252B
+    classDef storage fill:#E4F4EA,stroke:#43845A,color:#173D26
+    classDef result fill:#FFF1D6,stroke:#C18A2D,color:#593B09
 
-    subgraph Local["Local Data"]
-        Snapshot[("meter.json<br/>Meter metadata snapshot")]
-        Indexes[("In-memory indexes<br/>ID, serial, DT, feeder, make, status")]
-        DTCache[("Transformer cache<br/>Dataset, fetchedAt, expiry")]
-    end
-
-    subgraph Portal["Urja Meter Ops Portal"]
-        DTAPI["/portal/dts?page=N<br/>Paginated transformer data"]
-        EnergyAPI["/portal/meters/{id}/energy<br/>Energy readings"]
-        GeoAPI["/portal/meters/{id}/geo<br/>Latitude and longitude"]
-    end
-
-    Client --> Health
-    Client --> MeterList
-    Client --> Search
-    Client --> Serial
-    Client --> MeterDetail
-    Client --> Energy
-    Client --> Geo
-    Client --> Transformers
-    Client --> TransformerMeters
-    Client --> Hierarchy
-
-    Snapshot --> Index
-    Index --> Indexes
-
-    MeterList --> Filter
-    Search --> Filter
-    Serial --> Indexes
-    MeterDetail --> Indexes
-    Filter --> Indexes
-    Indexes --> MeterList
-    Indexes --> Search
-    Indexes --> Serial
-    Indexes --> MeterDetail
-
-    Hierarchy --> Indexes
-    TransformerMeters --> DTCache
-    TransformerMeters --> Indexes
-
-    Transformers --> Cache
-    Cache -->|Cache hit| DTCache
-    Cache -->|Cache miss or expired| FetchDT
-    FetchDT --> PortalGet
-    PortalGet --> DTAPI
-    DTAPI --> FetchDT
-    FetchDT -->|Successful refresh| DTCache
-    DTCache --> Transformers
-    DTCache -->|Fallback after refresh failure| Transformers
-
-    Energy --> PortalGet
-    Geo --> PortalGet
-    PortalGet --> EnergyAPI
-    PortalGet --> GeoAPI
-    EnergyAPI --> Energy
-    GeoAPI --> Geo
-
-    classDef endpoint fill:#17365D,stroke:#6FA8DC,color:#FFFFFF
-    classDef function fill:#3D3D3D,stroke:#AAAAAA,color:#FFFFFF
-    classDef storage fill:#174D3A,stroke:#6AAE91,color:#FFFFFF
-    classDef upstream fill:#5B3A70,stroke:#B59AC9,color:#FFFFFF
-
-    class Health,MeterList,Search,Serial,MeterDetail,Energy,Geo,Transformers,TransformerMeters,Hierarchy endpoint
-    class Index,Filter,PortalGet,FetchDT,Cache function
-    class Snapshot,Indexes,DTCache storage
-    class DTAPI,EnergyAPI,GeoAPI upstream
+    class A client
+    class B,C,D,E,G,I,L,M process
+    class F,J storage
+    class H,K,N result
 ```
+
+### 2. Local meter and hierarchy pipeline
+
+These endpoints use the locally loaded `meter.json` snapshot and in-memory indexes. They do not require a live portal request for each lookup.
+
+```mermaid
+flowchart TD
+    A["meter.json"] --> B["Startup indexing<br/>Build lookup dictionaries"]
+    B --> C[("In-memory indexes<br/>Meter ID, serial, transformer,<br/>feeder, make and status")]
+
+    D["GET /meters"] --> E["Apply filters and pagination"]
+    F["GET /meters/search"] --> E
+    G["GET /meters/search-by-serial/{serial_no}"] --> C
+    H["GET /meters/{meter_id}"] --> C
+    I["GET /network/hierarchy"] --> C
+
+    E <--> C
+
+    C --> J(["Meter or hierarchy data"])
+    E --> J
+
+    K["GET /transformers/{code}/meters"] --> L["Match transformer code<br/>to associated meters"]
+    L --> C
+
+    classDef endpoint fill:#E8F0FE,stroke:#4776C5,color:#172B4D
+    classDef process fill:#F1F3F5,stroke:#87919C,color:#20252B
+    classDef storage fill:#E4F4EA,stroke:#43845A,color:#173D26
+    classDef result fill:#FFF1D6,stroke:#C18A2D,color:#593B09
+
+    class D,F,G,H,I,K endpoint
+    class B,E,L process
+    class A,C storage
+    class J result
+```
+
+### 3. Live portal and transformer caching pipeline
+
+Transformer data uses pagination and a 30-minute in-memory cache. Energy and geographic data are fetched from the portal through the shared authenticated request helper.
+
+```mermaid
+flowchart TD
+    A["GET /transformers"] --> B{"Cache valid?"}
+
+    B -->|Yes| C(["Return cached data"])
+    B -->|No| D["fetch_all_transformers()"]
+    D --> E["portal_get(path)"]
+    E --> F["GET /portal/dts?page=N"]
+    F --> G{"All pages fetched<br/>and validated?"}
+
+    G -->|Yes| H["Update cache and fetchedAt"]
+    H --> C
+
+    G -->|No| I{"Previous cache exists?"}
+    I -->|Yes| J(["Return stale data<br/>stale: true"])
+    I -->|No| K(["Return upstream error"])
+
+    L["GET /meters/{meter_id}/energy"] --> M["portal_get(path)"]
+    N["GET /meters/{meter_id}/geo"] --> M
+
+    M --> O["Portal energy or geo endpoint"]
+    O --> P(["Return upstream data"])
+
+    classDef endpoint fill:#E8F0FE,stroke:#4776C5,color:#172B4D
+    classDef process fill:#F1F3F5,stroke:#87919C,color:#20252B
+    classDef decision fill:#FFF1D6,stroke:#C18A2D,color:#593B09
+    classDef storage fill:#E4F4EA,stroke:#43845A,color:#173D26
+    classDef result fill:#E7F5EB,stroke:#43845A,color:#173D26
+    classDef error fill:#FCE8E6,stroke:#C65A54,color:#6B201B
+
+    class A,L,N endpoint
+    class D,E,F,H,M,O process
+    class B,G,I decision
+    class C storage
+    class J,K error
+    class P result
+```
+
+### Key implementation functions
+
+| Component | Responsibility |
+|---|---|
+| Startup indexing | Loads meter metadata and builds lookup dictionaries. |
+| Meter filtering | Applies search criteria, hierarchy filters, and pagination. |
+| `portal_get(path)` | Sends authenticated requests and translates upstream errors. |
+| `fetch_all_transformers()` | Fetches transformer pages and validates the complete dataset. |
+| Transformer cache | Reuses data for 30 minutes and provides stale fallback after a failed refresh. |
+
+### Data freshness
+
+- **Meter metadata:** loaded from the local snapshot at startup; not automatically refreshed.
+- **Transformer metadata:** fetched from the portal and cached for 30 minutes.
+- **Energy and geo:** retrieved through live portal requests without adapter-side caching.
+
 
 ### How the pipeline works
 
