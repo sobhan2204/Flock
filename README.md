@@ -226,23 +226,30 @@ Then install:
 python -m pip install -r requirements.txt
 ```
 
-### 4. Configure the portal session
+### 4. Configure Portal Authentication
 
-Create a local `.env` file in the same directory as `main.py`:
+The adapter authenticates with the Urja Meter Ops portal using credentials stored in a local `.env` file. It submits a login request to `/login`, retains the resulting session cookie, and verifies that the session is accepted before using it for portal requests.
 
-```dotenv
-PORTAL_SESSION_COOKIE=replace_with_your_current_portal_session_token
-```
-
-Use the current value of the portal cookie named `__Secure-better-auth.session_token`. Do not include the cookie name in the value; the code supplies that name when making requests.
-
-The session expires and may need to be renewed by logging into the portal and replacing the value. Do not commit `.env` or share the token. Add `.env` to `.gitignore`.
-
-A safe `.env.example` can contain only a placeholder:
+Create a `.env` file in the same directory as `main.py`:
 
 ```dotenv
-PORTAL_SESSION_COOKIE=your_session_token_here
+PORTAL_EMAIL=your_portal_email
+PORTAL_PASSWORD=your_portal_password
 ```
+
+Replace the placeholders with your portal credentials. Do not hardcode credentials in Python files or commit `.env` to GitHub.
+
+The adapter uses the `__Secure-better-auth.session_token` cookie for authenticated requests. If a portal request returns HTTP `401` or `403`, the adapter attempts to re-authenticate and retries the failed request once.
+
+A safe `.env.example` file can contain placeholders:
+
+```dotenv
+PORTAL_EMAIL=your_portal_email
+PORTAL_PASSWORD=your_portal_password
+```
+
+Keep `.env` in `.gitignore`. The adapter requires valid portal credentials for live portal-backed endpoints; local meter metadata endpoints use `meter.json`.
+
 
 ### 5. Verify the meter dataset
 
@@ -468,14 +475,14 @@ The recorded run for this project passed **18 tests**. Tests using mocked portal
 - **Stale-if-refresh-fails:** improves availability while explicitly marking old data. Clients must inspect `stale` and `fetchedAt`.
 - **Paginated transformer retrieval:** uses the confirmed portal API and dynamically calculates page count. It requires multiple requests and can fail if pagination changes mid-fetch.
 - **Direct proxy for energy and geo:** avoids inventing or storing a separate cache policy for these data types. It means those endpoints depend on portal availability and session validity.
-- **No automatic login/session refresh:** no supported refresh flow was confirmed, so the implementation asks the operator to renew the session.
+- - **Automatic login and session recovery:** the adapter logs in using credentials from environment variables, retains the session cookie, and retries an upstream request once after attempting re-authentication on HTTP `401` or `403`. This avoids requiring manual cookie replacement during normal operation, although live authentication should still be verified.
 - **Simple FastAPI routes:** easy to inspect and document for a take-home assignment; the current code has not been split into a multi-module architecture.
 
 ## Intentionally skipped
 
 - Redis or other distributed caching infrastructure.
 - Persistent database storage for meter/transformer data.
-- Automatic portal login or session renewal.
+- - Automatic refresh-token handling or a dedicated session-refresh API, because no such supported mechanism has been confirmed. Session recovery is implemented through re-authentication using the observed login flow.
 - Energy-reading and geo caching; their freshness and invalidation policies have not been implemented.
 - Automatic refresh of `meter.json`.
 - A single-request transformer bulk export, because one has not been confirmed.
@@ -509,9 +516,17 @@ The recorded run for this project passed **18 tests**. Tests using mocked portal
 - I linked meters to transformers using their transformer codes to expose these relationships through the API.
 
 ### 3. Automatic Authentication
-- Initially, the adapter required a manually copied session cookie, which could expire while the application was running.
-- I updated it to log in using credentials stored in environment variables, retain the session cookie, and attempt re-authentication when an upstream request returns an authentication error.
-- The failed request is retried only once to avoid infinite retry loops, and credentials are kept out of the source code.
+
+- **Problem:** The portal uses a session cookie that can expire while the adapter is running.
+
+- **Implementation:** I inspected the browser's Network tab, identified the login request, and implemented automatic login using credentials stored in environment variables. The adapter retains the session cookie and verifies the session before using it.
+
+- **Recovery:** When an upstream request returns HTTP `401` or `403`, the adapter attempts re-authentication and retries the original request once. If authentication still fails, it returns an error rather than retrying indefinitely.
+
+- **Security consideration:** Credentials are kept outside the source code in `.env`, which must not be committed to the public repository.
+
+- **Limitation:** The implementation uses the observed login flow; a dedicated refresh-token mechanism has not been confirmed. Automated tests do not replace verification against the live portal.
+
 
 ### 4. Caching and Data Freshness
 - I implemented a **30-minute in-memory cache** for transformer data to reduce repeated portal requests.

@@ -10,36 +10,51 @@ The goal is to provide a clean, documented API over meter metadata, transformer/
 
 The current adapter combines a local meter metadata snapshot (`meter.json`) with live portal requests for transformer data, energy readings, and geographic coordinates.
 
-## 2. Authentication and session behavior
+## 2. Authentication and Session Behavior
 
-### Observed
+### Observed portal behavior
 
-- Portal API requests require an authenticated session. Unauthenticated or expired-session requests can return a response similar to:
-
-  ```json
-  {
-    "error": "unauthorized",
-    "message": "A valid session is required."
-  }
-  ```
-
-- The observed browser session cookie is named `__Secure-better-auth.session_token`.
+- The portal requires an authenticated session for protected requests.
+- The observed login request uses `POST /login`.
+- The submitted form fields are `email` and `password`.
+- The login response body was observed to contain a redirect description with status `303` and location `/meters`. The browser's Network panel also displayed HTTP `200 OK` for the request.
+- The session cookie is named `__Secure-better-auth.session_token`.
 - Observed cookie attributes included `Max-Age=3600`, `Path=/`, `HttpOnly`, `Secure`, and `SameSite=Lax`.
-- During testing, the session expired after roughly 30–40 minutes and required logging in again. The exact lifetime may vary.
-- The adapter reads the cookie value from `PORTAL_SESSION_COOKIE` in a local `.env` file and sends it using the cookie name above.
-- The session token is secret. Do not commit `.env`, put the token in this document, or expose it in logs or a public repository.
+- After logging in through the browser, the cookie was present with a non-empty value and was sent with requests to the meter page.
+- An unauthenticated or expired session can produce an unauthorized response.
 
 ### Adapter behavior
 
-- Portal `401`/`403` responses are translated to local HTTP `401` with a message asking the user to log in again and update `PORTAL_SESSION_COOKIE`.
-- A portal timeout is translated to local HTTP `504`.
-- Other HTTP/network errors are generally translated to local HTTP `502`.
-- If the cookie is not configured, the adapter returns local HTTP `500`.
+- The adapter reads `PORTAL_EMAIL` and `PORTAL_PASSWORD` from environment variables.
+- It submits a login request to `/login` and uses HTTPX to capture the session cookie.
+- It rejects an empty cookie and verifies the resulting session with an authenticated request before treating login as successful.
+- The session cookie is retained in application memory and reused for portal requests.
+- If a portal GET request returns HTTP `401` or `403`, the adapter attempts re-authentication and retries that request once.
+- If the retry still fails, the adapter returns an authentication error instead of retrying indefinitely.
+- Portal timeouts and other upstream failures are translated into local API errors.
+- Credentials must remain in `.env` or the deployment environment; they must not be committed to the repository.
 
-### Not established
+### Verified facts versus assumptions
 
-- No supported automated login or session-refresh API has been confirmed.
-- No refresh-token flow has been confirmed, so the adapter does not attempt automatic session renewal.
+**Verified during browser investigation**
+- The login URL is `/login`.
+- The request method is `POST`.
+- The observed payload field names are `email` and `password`.
+- The browser obtains a non-empty session cookie after successful login.
+- The cookie is sent with authenticated meter-page requests.
+
+**Implementation decisions**
+- The adapter uses environment variables for credentials.
+- HTTPX is used to handle login requests and cookie extraction.
+- The adapter verifies the session before accepting it and attempts one re-login when an upstream request returns `401` or `403`.
+
+**Not fully established**
+- Whether the portal provides an official refresh-token endpoint or a separate supported session-renewal API.
+- Whether every login attempt returns exactly the same HTTP status and response headers.
+- Whether the live login flow will remain unchanged as the portal evolves.
+
+The adapter's automatic login and recovery logic should be tested against the live portal periodically. Passing mocked tests validates the tested application logic but does not guarantee that the upstream authentication flow will remain unchanged.
+
 
 ## 3. Meter list, search, and bulk export
 
@@ -318,7 +333,7 @@ Keep these explicitly unconfirmed until tested:
 2. Whether a bulk energy endpoint, multi-meter energy endpoint, or supported date-range parameter exists.
 3. Whether a dedicated bulk geo export exists; the meter snapshot already contains geo fields.
 4. Whether the portal provides ETag/Last-Modified headers or another conditional-refresh mechanism.
-5. Whether session renewal can be automated through a supported API.
+5. Whether the portal provides a dedicated, officially supported session-refresh or refresh-token API. The adapter currently recovers from authentication failures by re-authenticating through the observed `/login` flow.
 6. Whether reading cadence is always 30 minutes for every meter and period.
 7. Whether the meter export can be refreshed programmatically rather than through the UI.
 8. Whether endpoint schemas and pagination behavior remain stable over time.
